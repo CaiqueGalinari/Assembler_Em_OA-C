@@ -250,7 +250,7 @@ void segundaPassagem(FILE* arquivoEntrada, FILE* arquivoSaida) {
         // passa de inteiro/32bits para string
         inteiro_para_string_binaria(instrucaoBinaria, str_binaria);
         // Escreve a string no arquivo
-        fprintf(arquivoSaida, "%s", str_binaria);
+        fprintf(arquivoSaida, "%s\n", str_binaria);
         // Passa para a proxima instrução
         enderecoInstrucaoAtual += 4;
     }
