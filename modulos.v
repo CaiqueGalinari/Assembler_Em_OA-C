@@ -13,21 +13,38 @@ module pc (
     end
 endmodule
 
-// Módulo da Memória de Instruções MODIFICADO para ler binário
 // Módulo da Memória de Instruções com Parâmetro
 module instruction_memory #(
-    parameter MEM_DEPTH = 1024 // Defina o tamanho da memória aqui
+    parameter MEM_DEPTH = 2048 // Defina o tamanho da memória aqui
 )(
     input wire [31:0] read_address,
     output reg [31:0] instruction
 );
-
-    // A memória usa o parâmetro para definir seu tamanho
+     // A memória usa o parâmetro para definir seu tamanho
     reg [31:0] rom [0:MEM_DEPTH-1];
+    reg [1023:0] nome_do_arquivo; // Suporta nomes de arquivo de até 127 caracteres
 
     initial begin
-        $readmemb("saida.asm", rom);
+        // Declara uma variável (string) para armazenar o nome do arquivo
+        
+        // $value$plusargs procura por um argumento na linha de comando
+        // que corresponda ao formato "ARQUIVO=%s".
+        // Se encontrar, ele armazena o valor da string em 'nome_do_arquivo'
+        // e retorna 1 (verdadeiro).
+        if ($value$plusargs("%s", nome_do_arquivo)) begin
+            $display("Carregando instrucoes do arquivo: %s", nome_do_arquivo);
+            $readmemb(nome_do_arquivo, rom);
+        end else begin
+            // Se o argumento +ARQUIVO=... não for fornecido, imprime uma mensagem de erro e encerra.
+            $display("-----------------------------------------------------------------");
+            $display("ERRO: Arquivo de instrucoes nao especificado.");
+            $display("Uso correto: vvp <executavel> +<caminho_para_o_arquivo>");
+            $display("Exemplo: vvp ford +saida.asm");
+            $display("-----------------------------------------------------------------");
+            $finish;
+        end
     end
+  
 
     always @(*) begin
         instruction = rom[read_address[11:2]];
@@ -118,14 +135,32 @@ module alu (
 endmodule
 
 // Módulo Gerador de Imediatos
+// =================================================================
+//          MÓDULO imm_gen CORRIGIDO E COMPLETO
+// =================================================================
 module imm_gen (
     input wire [31:0] instruction,
     output reg [31:0] immediate
 );
-
+    // Este módulo decodifica o valor imediato com base no tipo da instrução (opcode)
     always @(*) begin
-        // Para instruções do tipo I (como addi, lw)
-        immediate = {{20{instruction[31]}}, instruction[31:20]};
+        case (instruction[6:0])
+            // Tipo-I (usado por ADDI, ORI, LW, etc.)
+            7'b0010011, 7'b0000011:
+                immediate = {{20{instruction[31]}}, instruction[31:20]};
+
+            // Tipo-S (usado por SW, SB, etc.)
+            7'b0100011:
+                immediate = {{20{instruction[31]}}, instruction[31:25], instruction[11:7]};
+
+            // Tipo-B (usado por BEQ)
+            7'b1100011:
+                // Os bits do imediato do Tipo-B são espalhados, aqui nós os juntamos
+                immediate = {{19{instruction[31]}}, instruction[31], instruction[7], instruction[30:25], instruction[11:8], 1'b0};
+
+            default:
+                immediate = 32'hxxxxxxxx; // Indefinido para outros tipos
+        endcase
     end
 endmodule
 
@@ -163,64 +198,45 @@ module main_control (
     output reg reg_write
 );
 
-    always @(*) begin
-        case (opcode)
-            7'b0110011: begin // Tipo-R (add, sub, etc.)
-                branch      = 1'b0;
-                mem_read    = 1'b0;
-                mem_to_reg  = 1'b0;
-                alu_op      = 2'b10;
-                mem_write   = 1'b0;
-                alu_src     = 1'b0;
-                reg_write   = 1'b1;
-            end
-            7'b0010011: begin // Tipo-I (addi)
-                branch      = 1'b0;
-                mem_read    = 1'b0;
-                mem_to_reg  = 1'b0;
-                alu_op      = 2'b00; // Usa 'add' para o cálculo
-                mem_write   = 1'b0;
-                alu_src     = 1'b1;
-                reg_write   = 1'b1;
-            end
-            7'b0000011: begin // Tipo-I (lw)
-                branch      = 1'b0;
-                mem_read    = 1'b1;
-                mem_to_reg  = 1'b1;
-                alu_op      = 2'b00;
-                mem_write   = 1'b0;
-                alu_src     = 1'b1;
-                reg_write   = 1'b1;
-            end
-            7'b0100011: begin // Tipo-S (sw)
-                branch      = 1'b0;
-                mem_read    = 1'b0;
-                // mem_to_reg não importa
-                alu_op      = 2'b00;
-                mem_write   = 1'b1;
-                alu_src     = 1'b1;
-                reg_write   = 1'b0;
-            end
-            7'b1100011: begin // Tipo-B (beq)
-                branch      = 1'b1;
-                mem_read    = 1'b0;
-                mem_to_reg  = 1'b0;
-                alu_op      = 2'b01;
-                mem_write   = 1'b0;
-                alu_src     = 1'b0;
-                reg_write   = 1'b0;
-            end
-            default: begin
-                branch      = 1'b0;
-                mem_read    = 1'b0;
-                mem_to_reg  = 1'b0;
-                alu_op      = 2'bxx;
-                mem_write   = 1'b0;
-                alu_src     = 1'b0;
-                reg_write   = 1'b0;
-            end
-        endcase
-    end
+    // Dentro do module main_control (no seu arquivo modulos.v)
+// Substitua o always @(*) inteiro por este:
+
+always @(*) begin
+    // Inicializa todos os sinais com valores "seguros" (não fazer nada)
+    branch      = 1'b0;
+    mem_read    = 1'b0;
+    mem_to_reg  = 1'b0;
+    alu_op      = 2'b00; // Default para ADD
+    mem_write   = 1'b0;
+    alu_src     = 1'b0;
+    reg_write   = 1'b0;
+
+    // Agora, define os sinais apenas para as instruções que os ativam
+    case (opcode)
+        7'b0110011: begin // Tipo-R
+            alu_op      = 2'b10;
+            reg_write   = 1'b1;
+        end
+        7'b0010011: begin // Tipo-I (addi, ori, etc.)
+            alu_src     = 1'b1;
+            reg_write   = 1'b1;
+        end
+        7'b0000011: begin // lw
+            mem_read    = 1'b1;
+            mem_to_reg  = 1'b1;
+            alu_src     = 1'b1;
+            reg_write   = 1'b1;
+        end
+        7'b0100011: begin // sw, sb, etc.
+            mem_write   = 1'b1;
+            alu_src     = 1'b1;
+        end
+        7'b1100011: begin // beq
+            branch      = 1'b1;
+            alu_op      = 2'b01;
+        end
+    endcase
+end
 
 endmodule
 
@@ -342,8 +358,8 @@ module risc_v_processor (
         .sel(mem_to_reg),
         .y(write_back_data)
     );
-
 endmodule 
+
     // Módulo genérico de MUX 2 para 1
     // (Pode ser colocado em um arquivo separado)
 module mux2_1 #(parameter WIDTH = 32) (
