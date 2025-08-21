@@ -13,29 +13,26 @@ module pc (
     end
 endmodule
 
-// Módulo da Memória de Instruções com Parâmetro
+// Módulo da Memória de Instruções
 module instruction_memory #(
     parameter MEM_DEPTH = 2048 // Defina o tamanho da memória aqui
 )(
     input wire [31:0] read_address,
     output reg [31:0] instruction
 );
-     // A memória usa o parâmetro para definir seu tamanho
+     // A memória usa o MEM_DEPTH para definir seu tamanho
     reg [31:0] rom [0:MEM_DEPTH-1];
     reg [1023:0] nome_do_arquivo; // Suporta nomes de arquivo de até 127 caracteres
 
     initial begin
-        // Declara uma variável (string) para armazenar o nome do arquivo
         
         // $value$plusargs procura por um argumento na linha de comando
-        // que corresponda ao formato "ARQUIVO=%s".
         // Se encontrar, ele armazena o valor da string em 'nome_do_arquivo'
-        // e retorna 1 (verdadeiro).
         if ($value$plusargs("%s", nome_do_arquivo)) begin
             $display("Carregando instrucoes do arquivo: %s", nome_do_arquivo);
             $readmemb(nome_do_arquivo, rom);
         end else begin
-            // Se o argumento +ARQUIVO=... não for fornecido, imprime uma mensagem de erro e encerra.
+            // Se o argumento +ARQUIVO não for fornecido, imprime uma mensagem de erro e encerra.
             $display("-----------------------------------------------------------------");
             $display("ERRO: Arquivo de instrucoes nao especificado.");
             $display("Uso correto: vvp <executavel> +<caminho_para_o_arquivo>");
@@ -89,26 +86,50 @@ endmodule
 module alu_control (
     input wire [1:0] alu_op,
     input wire [2:0] funct3,
-    input wire funct7_5, // bit 30 da instrução
+    input wire funct7_5,
     output reg [3:0] alu_control_out
 );
 
     always @(*) begin
         case (alu_op)
-            2'b00: alu_control_out = 4'b0010; // add para load/store
-            2'b01: alu_control_out = 4'b0110; // sub para branch
-            2'b10: begin // Tipo-R
+            // Caso 00: Reservado para o ADD de cálculo de endereço (Load/Store)
+            2'b00: begin
+                alu_control_out = 4'b0010; // Sempre ADD
+            end
+
+            // Caso 01: Reservado para o SUB de comparação (Branch)
+            2'b01: begin
+                alu_control_out = 4'b0110; // Sempre SUB
+            end
+
+            // Caso 10: Para instruções Tipo-R (lê funct3)
+            2'b10: begin
                 case (funct3)
-                    3'b000: alu_control_out = funct7_5 ? 4'b0110 : 4'b0010; // sub : add
-                    3'b111: alu_control_out = 4'b0000; // and
-                    3'b110: alu_control_out = 4'b0001; // or
-                    default: alu_control_out = 4'bxxxx; // não implementado
+                    3'b000: alu_control_out = funct7_5 ? 4'b0110 : 4'b0010; // SUB/ADD
+                    3'b001: alu_control_out = 4'b0100; // SLL
+                    3'b100: alu_control_out = 4'b0011; // XOR
+                    3'b101: alu_control_out = 4'b0101; // SRL
+                    3'b110: alu_control_out = 4'b0001; // OR
+                    3'b111: alu_control_out = 4'b0000; // AND
+                    default: alu_control_out = 4'bxxxx;
                 endcase
             end
-            default: alu_control_out = 4'bxxxx; // não implementado
+
+            // Caso 11: Novo caso para instruções Tipo-I (lê funct3)
+            2'b11: begin
+                case (funct3)
+                    3'b000: alu_control_out = 4'b0010; // ADDI
+                    3'b001: alu_control_out = 4'b0100; // SLLI
+                    3'b101: alu_control_out = 4'b0101; // SRLI
+                    3'b110: alu_control_out = 4'b0001; // ORI
+                    3'b111: alu_control_out = 4'b0000; // ANDI
+                    default: alu_control_out = 4'bxxxx;
+                endcase
+            end
+
+            default: alu_control_out = 4'bxxxx;
         endcase
     end
-
 endmodule
 
 // Módulo da ALU
@@ -125,6 +146,9 @@ module alu (
             4'b0000: result = a & b; // AND
             4'b0001: result = a | b; // OR
             4'b0010: result = a + b; // ADD
+            4'b0011: result = a ^ b; // XOR
+            4'b0101: result = a >> b[4:0]; //SRL
+            4'b0100: result = a << b[4:0]; // SLL
             4'b0110: result = a - b; // SUB
             default: result = 32'b0;
         endcase
@@ -135,14 +159,11 @@ module alu (
 endmodule
 
 // Módulo Gerador de Imediatos
-// =================================================================
-//          MÓDULO imm_gen CORRIGIDO E COMPLETO
-// =================================================================
 module imm_gen (
     input wire [31:0] instruction,
     output reg [31:0] immediate
 );
-    // Este módulo decodifica o valor imediato com base no tipo da instrução (opcode)
+    // Decodifica o valor imediato com base no tipo da instrução (opcode)
     always @(*) begin
         case (instruction[6:0])
             // Tipo-I (usado por ADDI, ORI, LW, etc.)
@@ -171,16 +192,56 @@ module data_memory (
     input wire mem_read,
     input wire [31:0] address,
     input wire [31:0] write_data,
-    output wire [31:0] read_data
+    input wire [2:0] funct3,
+    output reg [31:0] read_data
 );
 
-    reg [31:0] ram [0:1023];
+    // A memória agora é um array de bytes para facilitar a manipulação
+    reg [7:0] ram [0:4095];
+    wire [11:0] word_address = address[11:0]; 
 
-    assign read_data = mem_read ? ram[address[11:2]] : 32'b0;
+    // Lógica de Leitura (combinacional)
+    always @(*) begin
+        if (mem_read) begin
+            case (funct3)
+                // LW: Load Word (32 bits)
+                3'b010: read_data = {ram[word_address+3], ram[word_address+2], ram[word_address+1], ram[word_address]};
+                // LH: Load Half-word (16 bits, com extensão de sinal)
+                3'b001: read_data = {{16{ram[word_address+1][7]}}, ram[word_address+1], ram[word_address]};
+                // LHU: Load Half-word Unsigned (16 bits, com extensão de zero)
+                3'b101: read_data = {{16{1'b0}}, ram[word_address+1], ram[word_address]};
+                // LB: Load Byte (8 bits, com extensão de sinal)
+                3'b000: read_data = {{24{ram[word_address][7]}}, ram[word_address]};
+                // LBU: Load Byte Unsigned (8 bits, com extensão de zero)
+                3'b100: read_data = {{24{1'b0}}, ram[word_address]};
+                default: read_data = 32'hxxxxxxxx;
+            endcase
+        end else begin
+            read_data = 32'b0;
+        end
+    end
 
+    // Lógica de Escrita (síncrona)
     always @(posedge clk) begin
         if (mem_write) begin
-            ram[address[11:2]] <= write_data;
+            case (funct3)
+                // SW: Store Word (32 bits)
+                3'b010: begin
+                    ram[word_address]   <= write_data[7:0];
+                    ram[word_address+1] <= write_data[15:8];
+                    ram[word_address+2] <= write_data[23:16];
+                    ram[word_address+3] <= write_data[31:24];
+                end
+                // SH: Store Half-word (16 bits)
+                3'b001: begin
+                    ram[word_address]   <= write_data[7:0];
+                    ram[word_address+1] <= write_data[15:8];
+                end
+                // SB: Store Byte (8 bits)
+                3'b000: begin
+                    ram[word_address] <= write_data[7:0];
+                end
+            endcase
         end
     end
 
@@ -198,46 +259,52 @@ module main_control (
     output reg reg_write
 );
 
-    // Dentro do module main_control (no seu arquivo modulos.v)
-// Substitua o always @(*) inteiro por este:
+    always @(*) begin
+        // Inicializa todos os sinais com um valor padrão "seguro"
+        branch      = 1'b0;
+        mem_read    = 1'b0;
+        mem_to_reg  = 1'b0;
+        alu_op      = 2'b00; // Padrão para ADD (usado por lw/sw)
+        mem_write   = 1'b0;
+        alu_src     = 1'b0; // Padrão para usar registrador na ALU
+        reg_write   = 1'b0;
 
-always @(*) begin
-    // Inicializa todos os sinais com valores "seguros" (não fazer nada)
-    branch      = 1'b0;
-    mem_read    = 1'b0;
-    mem_to_reg  = 1'b0;
-    alu_op      = 2'b00; // Default para ADD
-    mem_write   = 1'b0;
-    alu_src     = 1'b0;
-    reg_write   = 1'b0;
-
-    // Agora, define os sinais apenas para as instruções que os ativam
-    case (opcode)
-        7'b0110011: begin // Tipo-R
-            alu_op      = 2'b10;
-            reg_write   = 1'b1;
-        end
-        7'b0010011: begin // Tipo-I (addi, ori, etc.)
-            alu_src     = 1'b1;
-            reg_write   = 1'b1;
-        end
-        7'b0000011: begin // lw
-            mem_read    = 1'b1;
-            mem_to_reg  = 1'b1;
-            alu_src     = 1'b1;
-            reg_write   = 1'b1;
-        end
-        7'b0100011: begin // sw, sb, etc.
-            mem_write   = 1'b1;
-            alu_src     = 1'b1;
-        end
-        7'b1100011: begin // beq
-            branch      = 1'b1;
-            alu_op      = 2'b01;
-        end
-    endcase
-end
-
+        // Ativa os sinais específicos com base no opcode
+        case (opcode)
+            // Tipo-R (add, sub, and, or, etc.)
+            7'b0110011: begin
+                alu_op      = 2'b10;
+                reg_write   = 1'b1;
+            end
+            
+            // Tipo-I (addi, ori, slti, etc.)
+            7'b0010011: begin
+                alu_src     = 1'b1;
+                reg_write   = 1'b1;
+                alu_op      = 2'b11;
+            end
+            
+            // Tipo-I (lw)
+            7'b0000011: begin
+                mem_read    = 1'b1;
+                mem_to_reg  = 1'b1;
+                alu_src     = 1'b1;
+                reg_write   = 1'b1;
+            end
+            
+            // Tipo-S (sw, sb, sh)
+            7'b0100011: begin
+                mem_write   = 1'b1;
+                alu_src     = 1'b1;
+            end
+            
+            // Tipo-B (beq)
+            7'b1100011: begin
+                branch      = 1'b1;
+                alu_op      = 2'b01; 
+            end
+        endcase
+    end
 endmodule
 
 // Módulo Top-Level do Processador RISC-V
@@ -259,6 +326,8 @@ module risc_v_processor (
     wire branch, mem_read, mem_to_reg, mem_write, alu_src, reg_write;
     wire [1:0] alu_op;
     wire [3:0] alu_control_out;
+    wire beq_cond = (instruction[14:12] == 3'b000) & alu_zero;  
+    wire bne_cond = (instruction[14:12] == 3'b001) & ~alu_zero; 
     wire alu_zero;
     wire branch_control;
 
@@ -332,7 +401,7 @@ module risc_v_processor (
 
     // Lógica de cálculo do endereço de branch
     assign pc_branch = pc_current + immediate; // Simplificado
-    assign branch_control = branch & alu_zero;
+    assign branch_control = branch & (beq_cond | bne_cond);     // O desvio acontece se for uma instrução de branch E uma das condições for atendida
 
     mux2_1 #(32) pc_mux (
         .a(pc_plus_4),
@@ -348,6 +417,7 @@ module risc_v_processor (
         .mem_read(mem_read),
         .address(alu_result),
         .write_data(read_data2),
+        .funct3(instruction[14:12]),
         .read_data(mem_read_data)
     );
 
@@ -370,6 +440,3 @@ module mux2_1 #(parameter WIDTH = 32) (
 );
     assign y = sel ? b : a;
 endmodule
-
-
-
